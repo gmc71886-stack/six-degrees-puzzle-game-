@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Six Degrees - The Puzzle Game</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; font-family: 'Georgia', serif; }
+        #root { width: 100%; height: 100%; }
+        @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-8px); } }
+        @keyframes bubblePop { 0% { transform: scale(1); } 50% { transform: scale(1.25); } 100% { transform: scale(1); } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 30px rgba(244, 208, 63, 0.6); } 50% { box-shadow: 0 0 50px rgba(244, 208, 63, 0.9); } }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .spin { animation: spin 1s linear infinite; }
+        .bubble { animation: float 5s ease-in-out infinite; }
+        .bubble:hover { transform: scale(1.1) translateY(-4px) !important; z-index: 10; }
+        .bubble:active { transform: scale(0.95) !important; }
+        .bubble-pop { animation: bubblePop 0.4s ease-out !important; }
+        .bubble-selected { animation: pulseGlow 2s infinite !important; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useMemo, useEffect, useRef } = React;
+        function SixDegreesPuzzle() {
+            const [gamePhase, setGamePhase] = useState('setup');
+            const [startActor, setStartActor] = useState(null);
+            const [targetActor, setTargetActor] = useState(null);
+            const [currentActor, setCurrentActor] = useState(null);
+            const [turn, setTurn] = useState(1);
+            const [path, setPath] = useState([]);
+            const [currentOptions, setCurrentOptions] = useState([]);
+            const [loadingOptions, setLoadingOptions] = useState(false);
+            const [tmdbKey, setTmdbKey] = useState('');
+            const [showSettings, setShowSettings] = useState(false);
+            const [soundEnabled, setSoundEnabled] = useState(true);
+            const [error, setError] = useState('');
+            const [gameStage, setGameStage] = useState('picking_movie');
+            const [selectedMedia, setSelectedMedia] = useState(null);
+            const [activeBubble, setActiveBubble] = useState(null);
+            const synthRef = useRef(null);
+            const MAX_TURNS = 6;
+            useEffect(() => {
+                synthRef.current = new Tone.Synth({
+                    oscillator: { type: 'sine' },
+                    envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 0.4 }
+                }).toDestination();
+            }, []);
+            const playPop = (freq = 'C5') => {
+                if (!soundEnabled) return;
+                try { Tone.start(); synthRef.current?.triggerAttackRelease(freq, '16n'); } catch (e) {}
+            };
+            const playSelect = () => {
+                if (!soundEnabled) return;
+                try {
+                    Tone.start();
+                    const now = Tone.now();
+                    synthRef.current?.triggerAttackRelease('E5', '32n', now);
+                    synthRef.current?.triggerAttackRelease('G5', '32n', now + 0.05);
+                } catch (e) {}
+            };
+            const playWinFanfare = () => {
+                if (!soundEnabled) return;
+                try {
+                    Tone.start();
+                    const now = Tone.now();
+                    ['C5', 'E5', 'G5', 'C6'].forEach((n, i) => synthRef.current?.triggerAttackRelease(n, '8n', now + i * 0.1));
+                } catch (e) {}
+            };
+            const localDB = useMemo(() => ({
+                actors: {
+                    'Kevin Bacon': ['Apollo 13', 'Footloose', 'A Few Good Men', 'Mystic River'],
+                    'Tom Hanks': ['Apollo 13', 'Forrest Gump', 'Cast Away', 'Saving Private Ryan'],
+                    'Tom Cruise': ['A Few Good Men', 'Top Gun', 'Rain Man', 'Jerry Maguire'],
+                    'Jack Nicholson': ['A Few Good Men', 'The Departed', 'As Good as It Gets', 'Batman'],
+                    'Meryl Streep': ['The Devil Wears Prada', 'Doubt', 'Mamma Mia'],
+                    'Leonardo DiCaprio': ['The Departed', 'Inception', 'Titanic'],
+                    'Morgan Freeman': ['The Shawshank Redemption', 'Se7en', 'The Dark Knight'],
+                    'Denzel Washington': ['Training Day', 'Crimson Tide', 'American Gangster'],
+                    'Matt Damon': ['Saving Private Ryan', 'Ocean\'s Eleven', 'The Departed'],
+                    'Brad Pitt': ['Ocean\'s Eleven', 'Se7en', 'Fight Club'],
+                    'Robert De Niro': ['The Irishman', 'Goodfellas', 'Heat'],
+                    'Al Pacino': ['Heat', 'The Irishman', 'Scent of a Woman'],
+                    'Johnny Depp': ['Pirates of the Caribbean', 'Edward Scissorhands'],
+                    'Will Smith': ['Men in Black', 'Independence Day', 'Ali'],
+                    'Tom Hardy': ['Inception', 'The Dark Knight Rises', 'Mad Max: Fury Road'],
+                    'Christian Bale': ['The Dark Knight', 'American Hustle', 'The Fighter'],
+                    'Joaquin Phoenix': ['Joker', 'Gladiator', 'Walk the Line'],
+                    'Hugh Jackman': ['Les Misérables', 'X-Men', 'The Greatest Showman'],
+                    'Jennifer Lawrence': ['The Hunger Games', 'Silver Linings Playbook'],
+                    'Scarlett Johansson': ['Lost in Translation', 'The Avengers', 'Her'],
+                    'Cate Blanchett': ['The Lord of the Rings', 'Blue Jasmine', 'Carol'],
+                    'Anne Hathaway': ['The Devil Wears Prada', 'Les Misérables'],
+                    'Sandra Bullock': ['Ocean\'s 8', 'The Blind Side', 'Gravity'],
+                    'Nicole Kidman': ['Moulin Rouge', 'The Hours', 'Cold Mountain'],
+                    'Julia Roberts': ['Ocean\'s Eleven', 'Pretty Woman', 'Notting Hill'],
+                    'Emma Stone': ['La La Land', 'Easy A', 'Birdman'],
+                    'Ryan Gosling': ['La La Land', 'Drive', 'The Big Short'],
+                    'Harrison Ford': ['Star Wars', 'Indiana Jones', 'The Fugitive'],
+                    'Samuel L. Jackson': ['Pulp Fiction', 'The Avengers', 'Django Unchained'],
+                    'Christoph Waltz': ['Inglourious Basterds', 'Django Unchained'],
+                    'Michael Caine': ['The Dark Knight', 'Inception', 'The Prestige'],
+                    'Robert Downey Jr.': ['Iron Man', 'The Avengers'],
+                    'Chris Evans': ['The Avengers', 'Captain America'],
+                    'Daniel Craig': ['Casino Royale', 'Skyfall', 'Spectre'],
+                    'Natalie Portman': ['Black Swan', 'V for Vendetta', 'Star Wars'],
+                    'Keanu Reeves': ['The Matrix', 'John Wick', 'Speed'],
+                    'Viola Davis': ['Doubt', 'The Help', 'Fences'],
+                }
+            }), []);
+            const allActorNames = useMemo(() => Object.keys(localDB.actors).sort(), [localDB]);
+            const getActorMedia = async (actor) => {
+                setLoadingOptions(true);
+                await new Promise(r => setTimeout(r, 300));
+                const films = localDB.actors[actor.name] || [];
+                setLoadingOptions(false);
+                return films.map(f => ({ type: 'movie', name: f, isLocal: true }));
+            };
+            const getMediaCast = async (media) => {
+                setLoadingOptions(true);
+                await new Promise(r => setTimeout(r, 300));
+                const actors = [];
+                for (const [actor, movies] of Object.entries(localDB.actors)) {
+                    if (movies.includes(media.name) && actor !== currentActor?.name) {
+                        actors.push(actor);
+                    }
+                }
+                setLoadingOptions(false);
+                return actors.map(name => ({ name, isLocal: true }));
+            };
+            const handleBubbleClick = (actor) => {
+                if (gamePhase !== 'setup') return;
+                const notes = ['C5', 'D5', 'E5', 'F5', 'G5', 'A5', 'B5'];
+                playPop(notes[actor.name.length % notes.length]);
+                setActiveBubble(actor.name);
+                setTimeout(() => setActiveBubble(null), 400);
+                if (!startActor) { setStartActor(actor); playSelect(); }
+                else if (!targetActor && actor.name !== startActor.name) { setTargetActor(actor); playSelect(); }
+                else if (startActor?.name === actor.name) setStartActor(null);
+                else if (targetActor?.name === actor.name) setTargetActor(null);
+                else { setTargetActor(actor); playSelect(); }
+            };
+            const startGame = async () => {
+                if (!startActor || !targetActor) { setError('Select two actors to start'); return; }
+                setError('');
+                setGamePhase('playing');
+                setGameStage('picking_movie');
+                setCurrentActor(startActor);
+                setTurn(1);
+                setPath([{ ...startActor, type: 'actor' }]);
+                const media = await getActorMedia(startActor);
+                setCurrentOptions(media);
+                playSelect();
+            };
+            const handleMediaPick = async (media) => {
+                playPop('A5');
+                setSelectedMedia(media);
+                setGameStage('picking_actor');
+                const cast = await getMediaCast(media);
+                const filtered = cast.filter(a => a !== currentActor.name);
+                setCurrentOptions(filtered.map(n => ({ name: n })));
+                setPath(prev => [...prev, { ...media, type: 'media' }]);
+            };
+            const handleActorPick = async (actor) => {
+                playPop('E5');
+                setPath(prev => [...prev, { name: actor.name, type: 'actor' }]);
+                if (actor.name.toLowerCase() === targetActor.name.toLowerCase()) {
+                    playWinFanfare();
+                    setGamePhase('won');
+                    return;
+                }
+                if (turn >= MAX_TURNS) {
+                    setGamePhase('lost');
+                    return;
+                }
+                setTurn(prev => prev + 1);
+                setCurrentActor({ name: actor.name });
+                setSelectedMedia(null);
+                setGameStage('picking_movie');
+                const media = await getActorMedia({ name: actor.name });
+                setCurrentOptions(media);
+            };
+            const resetGame = () => {
+                setGamePhase('setup');
+                setStartActor(null);
+                setTargetActor(null);
+                setCurrentActor(null);
+                setTurn(1);
+                setPath([]);
+                setCurrentOptions([]);
+                setError('');
+            };
+            const surpriseMe = () => {
+                const shuffled = [...allActorNames].sort(() => 0.5 - Math.random());
+                setStartActor({ name: shuffled[0] });
+                setTargetActor({ name: shuffled[1] });
+            };
+            const bubbleStyles = useMemo(() => {
+                const styles = {};
+                allActorNames.forEach((name, idx) => {
+                    styles[name] = {
+                        animationDelay: `${(idx * 0.13) % 4}s`,
+                        animationDuration: `${4 + (idx % 5)}s`,
+                        size: 70 + ((idx * 7) % 35),
+                    };
+                });
+                return styles;
+            }, [allActorNames]);
+            return (
+                <div style={{
+                    minHeight: '100vh',
+                    background: 'radial-gradient(ellipse at top, #1a0f2e 0%, #0d0517 50%, #000 100%)',
+                    position: 'relative',
+                    overflow: 'hidden',
+                    fontFamily: "'Georgia', serif",
+                }}>
+                    <div style={{
+                        position: 'fixed', inset: 0,
+                        background: 'radial-gradient(2px 2px at 20% 30%, #d4af37, transparent)',
+                        backgroundSize: '550px 550px', opacity: 0.3, pointerEvents: 'none',
+                    }}></div>
+                    <div style={{
+                        position: 'absolute', top: 0, width: '100%', height: '36px',
+                        background: 'repeating-linear-gradient(90deg, #d4af37 0px, #d4af37 16px, #1a0f2e 16px, #1a0f2e 32px)',
+                        boxShadow: 'inset 0 -2px 12px rgba(0,0,0,0.6)', zIndex: 10,
+                    }}></div>
+                    <div style={{ position: 'fixed', top: '50px', right: '20px', zIndex: 100, display: 'flex', gap: '8px' }}>
+                        <button onClick={() => { setSoundEnabled(!soundEnabled); playPop('A5'); }} 
+                            style={{ background: 'rgba(212, 175, 55, 0.15)', border: '1px solid #d4af37', color: '#d4af37', padding: '10px', borderRadius: '50%', cursor: 'pointer' }}>
+                            {soundEnabled ? '🔊' : '🔇'}
+                        </button>
+                        <button onClick={() => setShowSettings(!showSettings)} 
+                            style={{ background: 'rgba(212, 175, 55, 0.15)', border: '1px solid #d4af37', color: '#d4af37', padding: '10px', borderRadius: '50%', cursor: 'pointer' }}>
+                            ⚙️
+                        </button>
+                    </div>
+                    {showSettings && (
+                        <div style={{
+                            position: 'fixed', top: '100px', right: '20px',
+                            background: 'rgba(20, 10, 30, 0.95)', border: '2px solid #d4af37',
+                            borderRadius: '8px', padding: '20px', width: '300px', zIndex: 100,
+                            backdropFilter: 'blur(20px)',
+                        }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+                                <h3 style={{ color: '#d4af37', margin: 0 }}>Settings</h3>
+                                <button onClick={() => setShowSettings(false)} style={{ background: 'transparent', border: 'none', color: '#d4af37', cursor: 'pointer', fontSize: '1.2rem' }}>
+                                    ✕
+                                </button>
+                            </div>
+                            <label style={{ color: '#e8d4b8', fontSize: '0.85rem' }}>TMDB API Key</label>
+                            <input type="password" value={tmdbKey} onChange={(e) => setTmdbKey(e.target.value)}
+                                placeholder="Your API key"
+                                style={{
+                                    width: '100%', padding: '8px 10px', marginTop: '6px',
+                                    background: 'rgba(255,255,255,0.1)', border: '1px solid #d4af37',
+                                    borderRadius: '4px', color: '#fff', fontSize: '0.85rem', outline: 'none',
+                                }} />
+                            <p style={{ color: '#b8a88a', fontSize: '0.75rem', marginTop: '8px' }}>
+                                Get free key at themoviedb.org/settings/api
+                            </p>
+                        </div>
+                    )}
+                    <div style={{ position: 'relative', padding: '60px 20px' }}>
+                        <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
+                            <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+                                <div style={{ fontSize: '3rem', marginBottom: '4px' }}>🎬</div>
+                                <h1 style={{
+                                    fontSize: 'clamp(2rem, 5vw, 3rem)', fontWeight: 'bold',
+                                    letterSpacing: '4px', margin: '0 0 4px',
+                                    color: '#d4af37',
+                                }}>SIX DEGREES</h1>
+                                <p style={{ fontSize: '1rem', color: '#e8d4b8', letterSpacing: '4px', margin: '0' }}>
+                                    THE PUZZLE GAME
+                                </p>
+                            </div>
+                            {gamePhase === 'setup' && (
+                                <>
+                                    <div style={{
+                                        background: 'rgba(212, 175, 55, 0.08)', border: '2px solid #d4af37',
+                                        borderRadius: '12px', padding: '20px', marginBottom: '20px', textAlign: 'center',
+                                    }}>
+                                        <h3 style={{ color: '#d4af37', margin: '0 0 8px' }}>🎯 Pick two actors and connect them in 6 turns!</h3>
+                                    </div>
+                                    <div style={{
+                                        background: 'rgba(212, 175, 55, 0.08)', border: '2px solid #d4af37',
+                                        borderRadius: '12px', padding: '20px', marginBottom: '20px',
+                                    }}>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '14px', alignItems: 'center', marginBottom: '16px' }}>
+                                            <ActorBox actor={startActor} label="START" onClear={() => setStartActor(null)} />
+                                            <div style={{ color: '#d4af37', fontSize: '1.5rem' }}>⇄</div>
+                                            <ActorBox actor={targetActor} label="TARGET" onClear={() => setTargetActor(null)} />
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                                            <button onClick={startGame} disabled={!startActor || !targetActor}
+                                                style={{
+                                                    padding: '14px 28px', fontSize: '1rem', fontWeight: 'bold',
+                                                    background: (!startActor || !targetActor) ? '#5a4a3a' : 'linear-gradient(135deg, #d4af37, #f4d03f)',
+                                                    color: '#1a0f2e', border: 'none', borderRadius: '6px',
+                                                    cursor: (!startActor || !targetActor) ? 'not-allowed' : 'pointer',
+                                                    letterSpacing: '2px', fontFamily: 'Georgia, serif',
+                                                }}>
+                                                ⚡ START PUZZLE
+                                            </button>
+                                            <button onClick={surpriseMe} 
+                                                style={{
+                                                    padding: '14px 22px', fontSize: '1rem', background: 'transparent',
+                                                    color: '#d4af37', border: '2px solid #d4af37', borderRadius: '6px',
+                                                    cursor: 'pointer', fontFamily: 'Georgia, serif',
+                                                }}>
+                                                🎲 RANDOM
+                                            </button>
+                 
